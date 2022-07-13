@@ -21,3 +21,12 @@ services:
             - "5800:5800"
         volumes:
             - ./filezilla:/storage:rw
+
+    attacker:
+        container_name: attacker
+        build: .
+        image: my-gcc
+        stdin_open: true # docker run -i
+        tty: true        # docker run -t
+        volumes:
+            - ./src:/usr/src

@@ -25,8 +25,11 @@ services:
     attacker:
         container_name: attacker
         build: .
-        image: my-gcc
-        stdin_open: true # docker run -i
-        tty: true        # docker run -t
+        image: wshark
+        ports:
+            - "3000:3000"
+        cap_add:
+            - NET_RAW
+            - NET_ADMIN
         volumes:
             - ./src:/usr/src

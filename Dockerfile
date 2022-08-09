@@ -1,5 +1,6 @@
-FROM gcc:9.5.0
+FROM linuxserver/wireshark:3.4.13
 
-RUN apt update && apt -y install libpcap-dev libnet-dev vim
+RUN apk update && apk add --no-cache build-base libpcap-dev libnet-dev vim \
+		tcpdump net-tools arping
 
 WORKDIR /usr/src/

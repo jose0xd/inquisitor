@@ -241,14 +241,15 @@ void packet_handler(u_char *args, const struct pcap_pkthdr *packet_header,
 
 		// Verbose option
 		if (vars->verbose && payload &&
-				(src_ip == vars->ip_target || src_ip == vars->ip_src))
+				(src_ip == vars->ip_target || src_ip == vars->ip_src) &&
+				memcmp(eth_header->ether_dhost, vars->mac_attacker, 6) &&
+				(payload[0] >= 32 && payload[0] <= 126))
 		{
 			int payload_len = packet_header->caplen - (int)(payload - packet);
 			printf("%s -> %s- ", libnet_addr2name4(src_ip, LIBNET_DONT_RESOLVE),
 					libnet_addr2name4(dst_ip, LIBNET_DONT_RESOLVE));
 			for (int i = 0; i < payload_len; i++)
 				printf("%c", payload[i]);
-			printf("\n");
 		}
 		// Resend packet
 		u_int8_t *shost = eth_header->ether_shost;
